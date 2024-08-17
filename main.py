@@ -6,6 +6,8 @@ from dash import Dash, dcc, html, Input, Output
 from dash.exceptions import PreventUpdate
 from sklearn.linear_model import LinearRegression
 import logging
+from plotly.subplots import make_subplots  # Add this import
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -77,7 +79,7 @@ def get_stock_data(symbol, interval='1m'):
 
 def analyze_stock(df):
     """
-    Analyzes the stock data to check for crashes, RSI, and provides prediction.
+    Analyzes the stock data to check for crashes, RSI, and provides a detailed prediction.
     """
     if df.empty:
         return None, None, None, None, None, None, None
@@ -101,18 +103,35 @@ def analyze_stock(df):
         
         rsi_oversold = df['RSI'].iloc[-1] < 30  # RSI oversold if below 30
         
-        # Linear Regression Prediction
+        # Enhanced Linear Regression Prediction with Volume
         df['time'] = np.arange(len(df))
-        X = df[['time']].values  # Convert to numpy array
+        df['hour_of_day'] = df.index.hour + df.index.minute / 60.0
+        
+        features = df[['time', 'hour_of_day', 'Volume']]
+        X = features.values  # Convert to numpy array
         y = df['Close'].values  # Convert to numpy array
+        
         model = LinearRegression()
         model.fit(X, y)
-        future_times = np.arange(len(df), len(df) + 10).reshape(-1, 1)  # Predict for the next 10 intervals
-        future_prices = model.predict(future_times)
+        
+        future_times = np.arange(len(df), len(df) + 10).reshape(-1, 1)
+        future_hours = (df.index[-1] + pd.to_timedelta(np.arange(1, 11), unit='T')).hour + \
+                        (df.index[-1] + pd.to_timedelta(np.arange(1, 11), unit='T')).minute / 60.0
+        future_volumes = df['Volume'].rolling(window=5).mean().iloc[-1]  # Predict future volumes as moving average
+        
+        future_features = np.column_stack([future_times, future_hours, [future_volumes]*10])
+        future_prices = model.predict(future_features)
         
         # Calculate percentage increase over the next 10 intervals
         future_percent_change = ((future_prices[-1] - df['Close'].iloc[-1]) / df['Close'].iloc[-1]) * 100
-        prediction_text = f"{future_percent_change:.2f}% increase expected over the next 10 intervals"
+        
+        prediction_text = f"""
+        Detailed Prediction:\n
+        - Expected percentage change over the next 10 intervals: {future_percent_change:.2f}%\n
+        - Expected price after 10 intervals: ${future_prices[-1]:.2f}\n
+        - Expected volatility in the next 10 intervals: {np.std(future_prices):.2f}\n
+        - Predicted price range in the next 10 intervals: ${min(future_prices):.2f} - ${max(future_prices):.2f}
+        """
         
         # Basic recommendation logic
         if percent_change < -5:
@@ -127,9 +146,10 @@ def analyze_stock(df):
         logging.error(f"Error analyzing data: {e}")
         return None, None, None, None, None, None, None
 
+
 def create_candlestick_chart(df, symbol, candlestick_colors=None, chart_height=800, future_times=None, future_prices=None):
     """
-    Creates a customizable candlestick chart for the stock data.
+    Creates a customizable candlestick chart for the stock data with a separate RSI chart.
     """
     try:
         # Default colors
@@ -141,7 +161,13 @@ def create_candlestick_chart(df, symbol, candlestick_colors=None, chart_height=8
                 'bearish_fill': 'rgba(255, 0, 0, 0.2)'
             }
         
-        fig = go.Figure(data=[go.Candlestick(
+        # Create subplots with 2 rows and shared x-axis
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                            vertical_spacing=0.05,  # Adjust spacing between plots
+                            row_heights=[0.7, 0.3])  # Adjust height ratio
+
+        # Add candlestick chart to the first row
+        fig.add_trace(go.Candlestick(
             x=df.index,
             open=df['Open'],
             high=df['High'],
@@ -152,9 +178,20 @@ def create_candlestick_chart(df, symbol, candlestick_colors=None, chart_height=8
             decreasing_line_color=candlestick_colors['bearish_down'],
             increasing_fillcolor=candlestick_colors['bullish_fill'],
             decreasing_fillcolor=candlestick_colors['bearish_fill']
-        )])
+        ), row=1, col=1)
+
+        # Add future price predictions if provided
+        if future_times is not None and future_prices is not None:
+            future_dates = df.index[-1] + pd.to_timedelta(np.arange(1, len(future_prices) + 1), unit='T')
+            fig.add_trace(go.Scatter(
+                x=future_dates,
+                y=future_prices,
+                mode='lines+markers',
+                name='Predicted Prices',
+                line=dict(color='cyan', dash='dash')
+            ), row=1, col=1)
         
-        # Add RSI line if it exists
+        # Add RSI line to the second row
         if 'RSI' in df.columns:
             fig.add_trace(go.Scatter(
                 x=df.index,
@@ -162,39 +199,30 @@ def create_candlestick_chart(df, symbol, candlestick_colors=None, chart_height=8
                 mode='lines',
                 name='RSI',
                 line=dict(color='purple')
-            ))
+            ), row=2, col=1)
         
-        # Add future price predictions if provided
-        if future_times is not None and future_prices is not None:
-            future_dates = df.index[-1] + pd.to_timedelta(np.arange(1, len(future_prices)+1), unit='T')
-            fig.add_trace(go.Scatter(
-                x=future_dates,
-                y=future_prices,
-                mode='lines+markers',
-                name='Predicted Prices',
-                line=dict(color='cyan', dash='dash')
-            ))
-        
+        # Add horizontal lines to indicate RSI thresholds (70 and 30)
+        fig.add_hline(y=70, line=dict(color='red', dash='dash'), row=2, col=1)
+        fig.add_hline(y=30, line=dict(color='green', dash='dash'), row=2, col=1)
+
+        # Update layout
         fig.update_layout(
-            title=f'{symbol} Candlestick Chart',
+            title=f'{symbol} Candlestick Chart with RSI',
             xaxis_title='Date',
             yaxis_title='Price',
-            yaxis2=dict(
-                overlaying='y',
-                side='right',
-                title='RSI',
-                titlefont=dict(color='purple'),
-                tickfont=dict(color='purple')
-            ),
+            yaxis2_title='RSI',
             template='plotly_dark',  # Use dark mode template
             plot_bgcolor='#1e1e1e',
             paper_bgcolor='#1e1e1e',
             font=dict(color='#e1e1e1'),
             margin=dict(l=0, r=0, t=50, b=0),
-            height=chart_height,
-            xaxis_rangeslider_visible=True  # Add range slider for zooming
+            height=chart_height,  # Overall chart height
+            xaxis_rangeslider_visible=False  # Range slider will be included on RSI chart
         )
-        
+
+        # Update second y-axis (RSI) layout specifically
+        fig.update_yaxes(range=[0, 100], row=2, col=1)  # Set RSI y-axis range from 0 to 100
+
         return fig
     except Exception as e:
         logging.error(f"Error creating chart for {symbol}: {e}")

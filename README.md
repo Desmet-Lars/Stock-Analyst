@@ -101,7 +101,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Contact
 
 For any questions or feedback, please contact [your-email@example.com](mailto:your-email@example.com).
-```
 
 ### Notes:
 1. **Repository URL**: Replace `https://github.com/yourusername/stock-dashboard.git` with the actual URL of your GitHub repository.

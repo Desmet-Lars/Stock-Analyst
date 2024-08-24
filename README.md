@@ -29,7 +29,7 @@ To set up the Stock Dashboard on your local machine, follow these steps:
 1. **Clone the Repository**
 
    ```bash
-   git clone https://github.com/yourusername/stock-dashboard.git
+   git clone https://github.com/desmet-lars/Stock-Analyst.git
    cd stock-dashboard
    ```
 

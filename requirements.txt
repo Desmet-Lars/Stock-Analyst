@@ -1,10 +1,7 @@
 dash==2.11.1
-dash-core-components==2.11.1
-dash-html-components==2.11.1
-dash-renderer==2.11.1
 flask-caching==2.0.2
 plotly==5.11.0
-pandas==2.1.1
+pandas
 numpy==1.24.4
 scikit-learn==1.2.2
 yfinance==0.2.18

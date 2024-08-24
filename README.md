@@ -30,7 +30,7 @@ To set up the Stock Dashboard on your local machine, follow these steps:
 
    ```bash
    git clone https://github.com/desmet-lars/Stock-Analyst.git
-   cd stock-dashboard
+   cd Stock-Analyst
    ```
 
 2. **Create a Virtual Environment**

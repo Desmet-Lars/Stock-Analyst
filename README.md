@@ -89,10 +89,6 @@ Contributions are welcome! Please follow these steps to contribute:
 4. Push to the feature branch.
 5. Create a pull request.
 
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 ## Acknowledgements
 
 - **Dash** and **Plotly** for providing the tools to build interactive web applications.

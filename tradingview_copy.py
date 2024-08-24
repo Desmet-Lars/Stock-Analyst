@@ -1,202 +1,239 @@
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from dash import Dash, dcc, html, Input, Output
-import logging
+from datetime import datetime, timedelta
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-
-# Define popular stocks and indicators
-POPULAR_STOCKS = ['BTC-USD', 'LULU', 'MARA', 'AAPL', 'GOOGL', 'MSFT', 'AMZN', 'TSLA']
-INDICATORS = ['RSI', 'MACD', 'Moving Average']
-
-# Initialize Dash app
 app = Dash(__name__)
 server = app.server
 
-# Define layout
-app.layout = html.Div(style={
-    'fontFamily': 'Arial, sans-serif',
-    'backgroundColor': '#121212',
-    'color': '#e0e0e0',
-    'boxSizing': 'border-box',
-    'overflowX': 'hidden'
-}, children=[
-    html.Header([
-        html.H1("Stock Dashboard", style={
-            'textAlign': 'center',
-            'color': '#f5f5f5',
-            'fontSize': '24px',
-            'fontWeight': '700',
-            'letterSpacing': '1px'
-        }),
-    ], style={
-        'backgroundColor': '#1f1f1f',
-        'padding': '10px',
-        'boxShadow': '0 2px 10px rgba(0, 0, 0, 0.3)'
-    }),
-    html.Div([
-        dcc.Dropdown(
-            id='stock-dropdown',
-            options=[{'label': stock, 'value': stock} for stock in POPULAR_STOCKS],
-            value='BTC-USD',
-            style={'backgroundColor': '#1f1f1f', 'color': '#e0e0e0', 'marginBottom': '20px', 'border': '1px solid #3d3d3d'}
-        ),
-        dcc.Dropdown(
-            id='indicator-dropdown',
-            options=[{'label': indicator, 'value': indicator} for indicator in INDICATORS],
-            value=['RSI'],
-            multi=True,
-            style={'backgroundColor': '#1f1f1f', 'color': '#e0e0e0', 'marginBottom': '20px', 'border': '1px solid #3d3d3d'}
-        )
-    ], style={'maxWidth': '1400px', 'margin': '0 auto', 'padding': '0 20px'}),
-    dcc.Interval(
-        id='interval-component',
-        interval=1*60*1000,
-        n_intervals=0
-    ),
-    dcc.Graph(id='stock-graph', config={
-        'displayModeBar': True,
-        'scrollZoom': True,
-        'displaylogo': False,
-        'modeBarButtonsToAdd': [
-            'drawline', 'drawopenpath', 'drawrect', 'drawcircle', 'eraseshape'
-        ],
-        'editable': True
-    }, style={'height': '800px', 'width': '100%', 'margin': '0 auto'}),
-])
+# Time intervals
+INTERVALS = {
+    '1 Minute': '1m',
+    '5 Minutes': '5m',
+    '15 Minutes': '15m',
+    '1 Hour': '1h',
+    '1 Day': '1d',
+    '1 Week': '1wk'
+}
 
-def get_stock_data(symbol, interval='1m'):
-    end_time = pd.Timestamp.now()
-    start_time = end_time - pd.Timedelta(days=1)
-    
-    df = yf.download(symbol, start=start_time, end=end_time, interval=interval, progress=False)
-    if df.empty:
-        logging.warning(f"No data returned for {symbol}. MARKET CLOSED")
-        return pd.DataFrame()
-    df.index = pd.to_datetime(df.index)
-    
-    df = df.resample('5T').agg({
-        'Open': 'first',
-        'High': 'max',
-        'Low': 'min',
-        'Close': 'last',
-        'Volume': 'sum'
-    }).dropna()
-    
+# Stock categories
+STOCK_CATEGORIES = {
+    'Crypto': ['BTC-USD', 'ETH-USD', 'BNB-USD'],
+    'Crypto Miners': ['MARA', 'RIOT', 'HUT'],
+    'Magnificent 7': ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA']
+}
+
+# Function to get stock data
+def get_stock_data(symbol, interval='1d'):
+    df = yf.download(symbol, period='1y', interval=interval, progress=False)
+    df = df.dropna().reset_index()  # Remove missing data and reset index
+    if 'USD' not in symbol:  # Non-crypto stocks
+        df = df[df['Date'].dt.dayofweek < 5]  # Remove weekends
     return df
 
-def calculate_indicators(df, selected_indicators):
-    indicators_data = {}
-    if 'RSI' in selected_indicators:
+# Add indicators (MA, RSI, MACD, Stochastic RSI)
+def add_indicators(df, indicators):
+    if 'MA50' in indicators:
+        df['MA50'] = df['Close'].rolling(window=50).mean()
+    if 'MA100' in indicators:
+        df['MA100'] = df['Close'].rolling(window=100).mean()
+    if 'MA200' in indicators:
+        df['MA200'] = df['Close'].rolling(window=200).mean()
+    
+    if 'RSI' in indicators:
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
-        indicators_data['RSI'] = df['RSI']
     
-    if 'MACD' in selected_indicators:
-        ema_12 = df['Close'].ewm(span=12, adjust=False).mean()
-        ema_26 = df['Close'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = ema_12 - ema_26
-        df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        indicators_data['MACD'] = df[['MACD', 'Signal']]
+    if 'MACD' in indicators:
+        df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     
-    if 'Moving Average' in selected_indicators:
-        df['MA20'] = df['Close'].rolling(window=20).mean()
-        indicators_data['Moving Average'] = df['MA20']
-    
-    return indicators_data
+    if 'StochRSI' in indicators:
+        rsi = df['RSI']
+        stoch_rsi = (rsi - rsi.rolling(window=14).min()) / (rsi.rolling(window=14).max() - rsi.rolling(window=14).min())
+        df['StochRSI'] = stoch_rsi * 100
 
-def create_candlestick_chart(df, symbol, indicators_data):
-    # Create subplots: Candlestick chart + chosen indicators
+    return df
+
+# Detect parallel channels
+def detect_channels(df):
+    df['Channel_high'] = df['Close'].rolling(window=20).apply(lambda x: x.max())
+    df['Channel_low'] = df['Close'].rolling(window=20).apply(lambda x: x.min())
+    
+    return df
+
+# Forecast future price using SARIMA
+def predict_future_price(df, days=30):
+    df = df.copy()
+    df.set_index('Date', inplace=True)
+    
+    # SARIMA model
+    model = SARIMAX(df['Close'], order=(1, 1, 1), seasonal_order=(1, 1, 1, 5))
+    model_fit = model.fit()
+    
+    future_dates = [df.index.max() + timedelta(days=i) for i in range(1, days + 1)]
+    forecast = model_fit.get_forecast(steps=days).predicted_mean
+    
+    future_df = pd.DataFrame({
+        'Date': future_dates,
+        'Predicted_Price': forecast
+    })
+
+    return future_df
+
+# Layout
+app.layout = html.Div(style={'backgroundColor': '#121212', 'color': '#e0e0e0', 'height': '100vh', 'margin': '0', 'display': 'flex'}, children=[
+    html.Div([
+        html.H1("Stock Dashboard", style={'textAlign': 'center', 'color': '#f5f5f5'}),
+        dcc.Tabs(id='category-tabs', value='Crypto', children=[
+            dcc.Tab(label='Crypto', value='Crypto'),
+            dcc.Tab(label='Crypto Miners', value='Crypto Miners'),
+            dcc.Tab(label='Magnificent 7', value='Magnificent 7')
+        ], style={'backgroundColor': '#1f1f1f', 'color': '#e0e0e0'}),
+        dcc.Dropdown(
+            id='stock-dropdown',
+            style={'backgroundColor': '#1f1f1f', 'color': '#e0e0e0', 'marginBottom': '20px'}
+        ),
+        dcc.Dropdown(
+            id='interval-dropdown',
+            options=[{'label': label, 'value': value} for label, value in INTERVALS.items()],
+            value='1d',
+            style={'backgroundColor': '#1f1f1f', 'color': '#e0e0e0', 'marginBottom': '20px'}
+        ),
+        html.Label("Indicators:", style={'color': '#e0e0e0'}),
+        dcc.Checklist(
+            id='indicator-checklist',
+            options=[
+                {'label': 'MA50', 'value': 'MA50'},
+                {'label': 'MA100', 'value': 'MA100'},
+                {'label': 'MA200', 'value': 'MA200'},
+                {'label': 'RSI', 'value': 'RSI'},
+                {'label': 'MACD', 'value': 'MACD'},
+                {'label': 'Stochastic RSI', 'value': 'StochRSI'}
+            ],
+            value=['RSI', 'MACD'],  # Default indicators
+            style={'backgroundColor': '#1f1f1f', 'color': '#e0e0e0', 'marginBottom': '20px'}
+        )
+    ], style={'width': '20%', 'backgroundColor': '#1f1f1f', 'padding': '20px', 'boxSizing': 'border-box'}),
+    
+    html.Div([
+        dcc.Graph(id='stock-graph', config={'displayModeBar': True, 'scrollZoom': True}),
+        html.Div(id='prediction-text', style={'padding': '20px', 'color': '#e0e0e0'})
+    ], style={'width': '80%', 'height': '100%', 'padding': '20px', 'boxSizing': 'border-box'})
+])
+
+# Update stock dropdown based on selected category
+@app.callback(
+    Output('stock-dropdown', 'options'),
+    Input('category-tabs', 'value')
+)
+def update_stock_dropdown(selected_category):
+    return [{'label': stock, 'value': stock} for stock in STOCK_CATEGORIES[selected_category]]
+
+# Callback to update the graph
+@app.callback(
+    [Output('stock-graph', 'figure'),
+     Output('prediction-text', 'children')],
+    [Input('stock-dropdown', 'value'),
+     Input('interval-dropdown', 'value'),
+     Input('indicator-checklist', 'value')]
+)
+def update_graph(selected_stock, selected_interval, selected_indicators):
+    if not selected_stock:
+        return {}, "Select a stock to see predictions."
+
+    df = get_stock_data(selected_stock, selected_interval)
+    df = add_indicators(df, selected_indicators)
+    df = detect_channels(df)
+    
+    # Predict future price
+    future_df = predict_future_price(df, days=30)
+    
+    # Determine number of rows for the subplot
+    num_rows = 1
+    if 'RSI' in selected_indicators:
+        num_rows += 1
+    if 'MACD' in selected_indicators:
+        num_rows += 1
+    if 'StochRSI' in selected_indicators:
+        num_rows += 1
+
     fig = make_subplots(
-        rows=1 + len(indicators_data),
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.1,
-        row_heights=[0.5] + [0.5 / len(indicators_data)] * len(indicators_data)
+        rows=num_rows, cols=1, shared_xaxes=True,
+        row_heights=[0.7] + [0.3] * (num_rows - 1),
+        vertical_spacing=0.05
     )
 
     # Candlestick chart
     fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
-        name='Candlestick'
-    ), row=1, col=1)
-
-    # Plot each selected indicator in its own subplot
-    for i, (indicator_name, indicator_data) in enumerate(indicators_data.items(), start=2):
-        if indicator_name == 'RSI':
-            fig.add_trace(go.Scatter(
-                x=df.index,
-                y=indicator_data,
-                name='RSI',
-                line=dict(color='#ff9100')
-            ), row=i, col=1)
-            fig.update_yaxes(title_text="RSI", range=[0, 100], row=i, col=1)
-        elif indicator_name == 'MACD':
-            fig.add_trace(go.Scatter(
-                x=df.index,
-                y=indicator_data['MACD'],
-                name='MACD',
-                line=dict(color='#00e5ff')
-            ), row=i, col=1)
-            fig.add_trace(go.Scatter(
-                x=df.index,
-                y=indicator_data['Signal'],
-                name='Signal',
-                line=dict(color='#ff1744')
-            ), row=i, col=1)
-            fig.update_yaxes(title_text="MACD", row=i, col=1)
-        elif indicator_name == 'Moving Average':
-            fig.add_trace(go.Scatter(
-                x=df.index,
-                y=indicator_data,
-                name='MA20',
-                line=dict(color='#76ff03')
-            ), row=1, col=1)
-
-    fig.update_layout(
-        title=f'{symbol} Candlestick Chart',
-        xaxis_title='Time',
-        yaxis_title='Price',
-        height=800,
-        margin=dict(l=20, r=20, t=50, b=20),
-        template='plotly_dark',
-        showlegend=False,
-        xaxis_rangeslider_visible=False,
-        hovermode='x unified',
-        dragmode='drawline'
-    )
-
-    return fig
-
-@app.callback(
-    Output('stock-graph', 'figure'),
-    [Input('interval-component', 'n_intervals'),
-     Input('stock-dropdown', 'value'),
-     Input('indicator-dropdown', 'value')]
-)
-def update_dashboard(n_intervals, selected_stock, selected_indicators):
-    logging.info(f"Callback triggered with n_intervals: {n_intervals}")
-    if n_intervals is None or not selected_stock:
-        raise PreventUpdate
-
-    df = get_stock_data(selected_stock)
-    if df.empty:
-        return {}
-
-    indicators_data = calculate_indicators(df, selected_indicators)
-    fig = create_candlestick_chart(df, selected_stock, indicators_data)
+        x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+        name='Candlestick'), row=1, col=1)
     
-    return fig
+    # Add indicators
+    if 'MA50' in selected_indicators:
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['MA50'], mode='lines', name='MA50', line=dict(color='#e377c2')), row=1, col=1)
+    if 'MA100' in selected_indicators:
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['MA100'], mode='lines', name='MA100', line=dict(color='#7f7f7f')), row=1, col=1)
+    if 'MA200' in selected_indicators:
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['MA200'], mode='lines', name='MA200', line=dict(color='#bcbd22')), row=1, col=1)
+    
+    if 'MACD' in selected_indicators:
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['MACD'], mode='lines', name='MACD', line=dict(color='#8c564b')), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['MACD_signal'], mode='lines', name='MACD Signal', line=dict(color='#17becf')), row=2, col=1)
+
+    if 'StochRSI' in selected_indicators:
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['StochRSI'], mode='lines', name='Stochastic RSI', line=dict(color='#00bfae')), row=3, col=1)
+    
+    # Add parallel channel lines
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['Channel_high'], mode='lines', name='Channel High', line=dict(color='#FF5733', dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['Channel_low'], mode='lines', name='Channel Low', line=dict(color='#33FF57', dash='dash')), row=1, col=1)
+    
+    # Add prediction line
+    fig.add_trace(go.Scatter(x=future_df['Date'], y=future_df['Predicted_Price'], mode='lines', name='Future Price', line=dict(color='#FF00FF')), row=1, col=1)
+
+    # Update layout
+    fig.update_layout(
+        template='plotly_dark', title=f'{selected_stock} Price Analysis',
+        xaxis_title='Date', yaxis_title='Price', xaxis_rangeslider_visible=False,
+        height=800
+    )
+    
+    # Prepare prediction text
+    next_date = future_df['Date'].iloc[-1].strftime('%Y-%m-%d')
+    next_price = future_df['Predicted_Price'].iloc[-1]
+    prediction_text = f"Predicted Price on {next_date}: ${next_price:.2f}"
+
+    # Explanation for price movement
+    explanation = []
+    if 'RSI' in selected_indicators:
+        if df['RSI'].iloc[-1] > 70:
+            explanation.append("RSI indicates the stock is overbought, suggesting a potential price drop.")
+        elif df['RSI'].iloc[-1] < 30:
+            explanation.append("RSI indicates the stock is oversold, suggesting a potential price increase.")
+    
+    if 'MACD' in selected_indicators:
+        if df['MACD'].iloc[-1] > df['MACD_signal'].iloc[-1]:
+            explanation.append("MACD line is above the MACD signal line, indicating bullish momentum.")
+        else:
+            explanation.append("MACD line is below the MACD signal line, indicating bearish momentum.")
+
+    if 'StochRSI' in selected_indicators:
+        if df['StochRSI'].iloc[-1] > 80:
+            explanation.append("Stochastic RSI indicates the stock is overbought.")
+        elif df['StochRSI'].iloc[-1] < 20:
+            explanation.append("Stochastic RSI indicates the stock is oversold.")
+    
+    if explanation:
+        prediction_text += "\n".join(explanation)
+
+    return fig, prediction_text
 
 if __name__ == '__main__':
     app.run_server(debug=True)

@@ -1,0 +1,187 @@
+import dash
+import dash_core_components as dcc
+import dash_html_components as html
+import dash_bootstrap_components as dbc
+from dash.dependencies import Input, Output
+
+import yfinance as yf
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+from keras.models import Sequential
+from keras.layers import LSTM, GRU, Dense, Dropout
+from keras.optimizers import SGD
+import plotly.graph_objs as go
+
+# Fetch stock data
+def fetch_data(ticker):
+    stock = yf.Ticker(ticker)
+    data = stock.history(period="5y")  # Fetching 5 years of data
+    
+    # Manually calculating a few basic technical indicators
+    data['SMA_50'] = data['Close'].rolling(window=50).mean()
+    data['SMA_200'] = data['Close'].rolling(window=200).mean()
+    data['Momentum'] = data['Close'].diff(4)  # 4-day momentum
+
+    # Filling missing values due to rolling calculations
+    data.fillna(method='bfill', inplace=True)
+    data.fillna(method='ffill', inplace=True)
+    
+    return data
+
+# Prepare the models and make predictions
+def predict_stock_price(ticker, n_days=100):
+    data = fetch_data(ticker)
+    
+    # Including additional features
+    features = ['Close', 'Volume', 'SMA_50', 'SMA_200', 'Momentum']
+    dataset = data[features]
+
+    # Splitting the data into training and test sets
+    training_set = dataset[:'2022'].values
+    test_set = dataset['2023':].values
+
+    # Scaling the data
+    sc = MinMaxScaler(feature_range=(0, 1))
+    training_set_scaled = sc.fit_transform(training_set)
+
+    # Preparing the training data
+    X_train = []
+    y_train = []
+    for i in range(60, len(training_set_scaled)):
+        X_train.append(training_set_scaled[i-60:i])
+        y_train.append(training_set_scaled[i, 0])  # Close price is the target
+    X_train, y_train = np.array(X_train), np.array(y_train)
+
+    # Initialize the LSTM model
+    lstm_model = Sequential()
+    lstm_model.add(LSTM(units=100, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
+    lstm_model.add(Dropout(0.2))
+    lstm_model.add(LSTM(units=100, return_sequences=True))
+    lstm_model.add(Dropout(0.2))
+    lstm_model.add(LSTM(units=100))
+    lstm_model.add(Dropout(0.2))
+    lstm_model.add(Dense(units=1))
+
+    # Compiling the LSTM model
+    lstm_model.compile(optimizer=SGD(learning_rate=0.01, decay=1e-7, momentum=0.9, nesterov=False), loss='mean_squared_error')
+
+    # Training the LSTM model
+    lstm_model.fit(X_train, y_train, epochs=50, batch_size=150, verbose=0)
+
+    # Initialize the GRU model
+    gru_model = Sequential()
+    gru_model.add(GRU(units=100, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
+    gru_model.add(Dropout(0.2))
+    gru_model.add(GRU(units=100, return_sequences=True))
+    gru_model.add(Dropout(0.2))
+    gru_model.add(GRU(units=100))
+    gru_model.add(Dropout(0.2))
+    gru_model.add(Dense(units=1))
+
+    # Compiling the GRU model
+    gru_model.compile(optimizer=SGD(learning_rate=0.01, decay=1e-7, momentum=0.9, nesterov=False), loss='mean_squared_error')
+
+    # Training the GRU model
+    gru_model.fit(X_train, y_train, epochs=50, batch_size=150, verbose=0)
+
+    # Preparing the test data
+    total_data = pd.concat((dataset[:'2022'], dataset['2023':]), axis=0)
+    inputs = total_data[len(total_data) - len(test_set) - 60:].values
+    inputs = sc.transform(inputs)
+    X_test = []
+    for i in range(60, len(inputs)):
+        X_test.append(inputs[i-60:i])
+    X_test = np.array(X_test)
+
+    # Predicting stock prices using LSTM model
+    predicted_stock_price_lstm = lstm_model.predict(X_test)
+    predicted_stock_price_lstm = sc.inverse_transform(
+        np.concatenate([predicted_stock_price_lstm, np.zeros((predicted_stock_price_lstm.shape[0], X_train.shape[2] - 1))], axis=1)
+    )[:, 0]
+
+    # Predicting stock prices using GRU model
+    predicted_stock_price_gru = gru_model.predict(X_test)
+    predicted_stock_price_gru = sc.inverse_transform(
+        np.concatenate([predicted_stock_price_gru, np.zeros((predicted_stock_price_gru.shape[0], X_train.shape[2] - 1))], axis=1)
+    )[:, 0]
+
+    # Combining LSTM and GRU predictions by averaging
+    predicted_stock_price = (predicted_stock_price_lstm + predicted_stock_price_gru) / 2
+
+    # Future predictions
+    future_predictions = []
+    last_input = X_test[-1]
+
+    for _ in range(n_days):
+        next_input_lstm = lstm_model.predict(last_input.reshape(1, -1, X_train.shape[2]))
+        next_input_gru = gru_model.predict(last_input.reshape(1, -1, X_train.shape[2]))
+        next_input = (next_input_lstm + next_input_gru) / 2
+
+        future_predictions.append(next_input[0, 0])
+        last_input = np.roll(last_input, -1, axis=0)
+        last_input[-1, 0] = next_input
+
+    future_predictions = np.array(future_predictions).reshape(-1, 1)
+    future_predictions = sc.inverse_transform(
+        np.concatenate([future_predictions, np.zeros((n_days, X_train.shape[2] - 1))], axis=1)
+    )[:, 0]
+
+    return data, predicted_stock_price, future_predictions
+
+# Plotting function
+def plot_predictions(data, predicted_data, future_predicted):
+    # Align the predicted data with the actual data dates
+    trace1 = go.Scatter(x=data.index, y=data['Close'], mode='lines', name='Real Stock Price', line=dict(color='red'))
+    
+    # Create a date index for the predicted stock prices
+    predicted_index = data.index[-len(predicted_data):]
+    trace2 = go.Scatter(x=predicted_index, y=predicted_data.flatten(), mode='lines', name='Predicted Stock Price', line=dict(color='blue'))
+    
+    # Generate future dates
+    future_dates = pd.date_range(start=data.index[-1], periods=len(future_predicted) + 1, inclusive='right')
+    trace3 = go.Scatter(x=future_dates[1:], y=future_predicted.flatten(), mode='lines', name='Future Predicted Price', line=dict(color='green', dash='dash'))
+    
+    return [trace1, trace2, trace3]
+
+
+# Initialize Dash app
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+
+# Layout of the app
+app.layout = dbc.Container([
+    dbc.Row([
+        dbc.Col([
+            html.H1("Stock Price Prediction", className="text-center"),
+            dcc.Dropdown(id="ticker-dropdown", options=[
+                {"label": "Apple", "value": "AAPL"},
+                {"label": "Microsoft", "value": "MSFT"},
+                {"label": "Amazon", "value": "AMZN"},
+                {"label": "Google", "value": "GOOGL"},
+                {"label": "Marathon Digital Holdings", "value": "MARA"},
+                {"label": "Lululemon", "value": "LULU"},
+                {"label": "Bitcoin (BTC-USD)", "value": "BTC-USD"},
+                {"label": "NVIDIA", "value": "NVDA"},
+                {"label": "Tesla", "value": "TSLA"},
+                {"label": "Meta Platforms", "value": "META"},
+            ], value="AAPL"),
+            dcc.Graph(id="stock-price-chart"),
+        ], width=12)
+    ])
+])
+
+# Callback to update the chart based on dropdown selection
+@app.callback(
+    Output("stock-price-chart", "figure"),
+    Input("ticker-dropdown", "value")
+)
+def update_graph(ticker):
+    data, predicted_stock_price, future_predicted = predict_stock_price(ticker)
+    traces = plot_predictions(data, predicted_stock_price, future_predicted)
+    layout = go.Layout(title=f"{ticker} Stock Price Prediction", xaxis={'title': 'Date'}, yaxis={'title': 'Price'})
+    return {'data': traces, 'layout': layout}
+
+# Run the app
+if __name__ == '__main__':
+    app.run_server(debug=True)
+    

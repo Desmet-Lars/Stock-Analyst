@@ -94,9 +94,6 @@ Contributions are welcome! Please follow these steps to contribute:
 - **Dash** and **Plotly** for providing the tools to build interactive web applications.
 - **yfinance** for easy access to financial data.
 
-## Contact
-
-For any questions or feedback, please contact [your-email@example.com](mailto:your-email@example.com).
 
 ### Notes:
 1. **Repository URL**: Replace `https://github.com/yourusername/stock-dashboard.git` with the actual URL of your GitHub repository.
